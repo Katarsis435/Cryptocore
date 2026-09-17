@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.idea/
+*.enc
+*.dec
+ciphertext*.bin
+decrypted*.txt
+plaintext.txt
+openssl.bin
