@@ -4,8 +4,6 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from src.modes.ecb import ecb_encrypt, ecb_decrypt, pkcs7_pad, pkcs7_unpad
 
 
