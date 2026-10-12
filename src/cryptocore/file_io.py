@@ -1,4 +1,4 @@
-"""Binary-safe file input/output helpers."""
+"""Binary-safe file I/O."""
 
 from pathlib import Path
 

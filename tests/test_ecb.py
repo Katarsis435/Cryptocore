@@ -4,7 +4,7 @@ import os
 import sys
 import unittest
 
-from src.modes.ecb import ecb_encrypt, ecb_decrypt, pkcs7_pad, pkcs7_unpad
+from cryptocore.modes.ecb import ecb_encrypt, ecb_decrypt, pkcs7_pad, pkcs7_unpad
 
 
 class TestPKCS7(unittest.TestCase):
