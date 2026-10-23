@@ -11,4 +11,7 @@ plaintext.txt
 decrypted.txt
 ciphertext.bin
 openssl*.bin
-ct_only.bin
+ct_only.bin*.sha3
+backup.*
+nist_data.bin
+nist_test_data.bin

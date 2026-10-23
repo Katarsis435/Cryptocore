@@ -2,11 +2,11 @@
 
 Sponge construction (Keccak-f[1600]) with rate = 1088 bits (136 bytes)
 and capacity = 512 bits, output 256 bits.
-
-Streaming API identical to SHA256.
 """
 
-# Round constants for Keccak-f[1600] (FIPS 202, sec. 3.2.5)
+MASK64 = (1 << 64) - 1
+
+# Round constants for Keccak-f[1600]
 _RC = [
     0x0000000000000001, 0x0000000000008082, 0x800000000000808A,
     0x8000000080008000, 0x000000000000808B, 0x0000000080000001,
@@ -18,7 +18,8 @@ _RC = [
     0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
 ]
 
-# Rotation offsets (FIPS 202, table 2) — flattened for the 5x5 lane matrix
+# Rotation offsets R[x][y], x = column, y = row
+# (FIPS 202, Table 2, stored as offsets[x][y])
 _ROT = [
     [0, 36, 3, 41, 18],
     [1, 44, 10, 45, 2],
@@ -27,39 +28,44 @@ _ROT = [
     [27, 20, 39, 8, 14],
 ]
 
-MASK64 = 0xFFFFFFFFFFFFFFFF
 
-
-def _rol(x: int, n: int) -> int:
+def _rol(x, n):
     n %= 64
+    if n == 0:
+        return x & MASK64
     return ((x << n) | (x >> (64 - n))) & MASK64
 
 
-def _keccak_f(a):
-    """Keccak-f[1600] permutation on a 5x5 list of 64-bit lanes."""
+def _keccak_f(state):
+    """In-place Keccak-f[1600] permutation.
+
+    `state` is a 5x5 list of lists of 64-bit ints: state[x][y].
+    """
     for rnd in range(24):
-        # θ (theta)
-        c = [a[x][0] ^ a[x][1] ^ a[x][2] ^ a[x][3] ^ a[x][4] for x in range(5)]
-        d = [c[(x - 1) % 5] ^ _rol(c[(x + 1) % 5], 1) for x in range(5)]
+        # --- theta ---
+        C = [state[x][0] ^ state[x][1] ^ state[x][2] ^ state[x][3] ^ state[x][4]
+             for x in range(5)]
+        D = [C[(x - 1) % 5] ^ _rol(C[(x + 1) % 5], 1) for x in range(5)]
         for x in range(5):
             for y in range(5):
-                a[x][y] ^= d[x]
+                state[x][y] ^= D[x]
 
-        # ρ (rho) and π (pi)
-        b = [[0] * 5 for _ in range(5)]
+        # --- rho + pi ---
+        # B[y][(2*x + 3*y) % 5] = rol(A[x][y], r[x][y])
+        B = [[0] * 5 for _ in range(5)]
         for x in range(5):
             for y in range(5):
-                b[y][(2 * x + 3 * y) % 5] = _rol(a[x][y], _ROT[x][y])
+                B[y][(2 * x + 3 * y) % 5] = _rol(state[x][y], _ROT[x][y])
 
-        # χ (chi)
+        # --- chi ---
+        # A[x][y] = B[x][y] ^ ((~B[x+1][y]) & B[x+2][y])
         for x in range(5):
             for y in range(5):
-                a[x][y] = b[x][y] ^ ((~b[(x + 1) % 5][y]) & b[(x + 2) % 5][y])
+                state[x][y] = B[x][y] ^ ((~B[(x + 1) % 5][y] & MASK64) &
+                                         B[(x + 2) % 5][y])
 
-        # ι (iota)
-        a[0][0] ^= _RC[rnd]
-
-    return a
+        # --- iota ---
+        state[0][0] ^= _RC[rnd]
 
 
 class SHA3_256:
@@ -68,9 +74,22 @@ class SHA3_256:
     name = "sha3-256"
 
     def __init__(self):
+        # state[x][y], all zero
         self._state = [[0] * 5 for _ in range(5)]
         self._buffer = b""
 
+    # ---------------- absorb ----------------
+    def _absorb_block(self, block: bytes):
+        # block is exactly RATE = 136 bytes
+        # Each 8-byte little-endian lane goes to position (x = i % 5, y = i // 5)
+        for i in range(self.RATE // 8):     # 17 lanes
+            lane = int.from_bytes(block[i * 8:(i + 1) * 8], "little")
+            x = i % 5
+            y = i // 5
+            self._state[x][y] ^= lane
+        _keccak_f(self._state)
+
+    # ---------------- public API ----------------
     def update(self, data: bytes) -> "SHA3_256":
         if not isinstance(data, (bytes, bytearray)):
             raise TypeError("SHA3_256.update expects bytes-like object")
@@ -82,60 +101,43 @@ class SHA3_256:
         return self
 
     def digest(self) -> bytes:
+        # Work on a copy of the state so digest() is non-destructive
         state = [[self._state[x][y] for y in range(5)] for x in range(5)]
 
-        # Padding: SHA3 uses 0x06 (multirate padding with '01' domain separator)
-        # then zeros, then last byte 0x80.
+        # Padding for SHA3: append 0x06, zeros, 0x80 at the last byte of block
         pad = bytearray(self._buffer)
         pad.append(0x06)
-        pad += b"\x00" * ((self.RATE - len(pad) % self.RATE) % self.RATE - 1)
-        if len(pad) % self.RATE == 0:
-            pad[-1] |= 0x80
-        else:
-            pad = pad[:-1] + bytes([0x80])
-        # simpler explicit form:
-        pad = bytearray(self._buffer) + b"\x06"
-        pad += b"\x00" * (self.RATE - len(pad) % self.RATE)
-        pad[-1] |= 0x80
+        # Fill until multiple of RATE
+        while len(pad) % self.RATE != 0:
+            pad.append(0x00)
+        pad[-1] ^= 0x80
 
-        # absorb padded blocks into the copy
+        # Absorb all padded blocks into the local copy
         for i in range(0, len(pad), self.RATE):
-            self._absorb_block_into(state, pad[i:i + self.RATE])
+            block = bytes(pad[i:i + self.RATE])
+            for j in range(self.RATE // 8):
+                lane = int.from_bytes(block[j * 8:(j + 1) * 8], "little")
+                x = j % 5
+                y = j // 5
+                state[x][y] ^= lane
+            _keccak_f(state)
 
-        # squeeze first 32 bytes
+        # Squeeze 32 bytes.
+        # Order: for y in range(5): for x in range(5): take state[x][y]
         out = bytearray()
-        while len(out) < self.DIGEST_SIZE:
+        for y in range(5):
             for x in range(5):
-                for y in range(5):
-                    if len(out) >= self.DIGEST_SIZE:
-                        break
-                    lane = state[x][y]
-                    out += lane.to_bytes(8, "little")
                 if len(out) >= self.DIGEST_SIZE:
                     break
-            if len(out) < self.DIGEST_SIZE:
-                state = _keccak_f(state)
+                out += state[x][y].to_bytes(8, "little")
+            if len(out) >= self.DIGEST_SIZE:
+                break
+        # If somehow not enough (not possible for 256-bit output with 136-byte rate),
+        # squeeze another block by calling _keccak_f — not needed here.
         return bytes(out[:self.DIGEST_SIZE])
 
     def hexdigest(self) -> str:
         return self.digest().hex()
-
-    def _absorb_block(self, block: bytes):
-        for i in range(0, self.RATE, 8):
-            lane = int.from_bytes(block[i:i + 8], "little")
-            x = (i // 8) % 5
-            y = (i // 8) // 5
-            self._state[x][y] ^= lane
-        _keccak_f(self._state)
-
-    @staticmethod
-    def _absorb_block_into(state, block: bytes):
-        for i in range(0, len(block), 8):
-            lane = int.from_bytes(block[i:i + 8], "little")
-            x = (i // 8) % 5
-            y = (i // 8) // 5
-            state[x][y] ^= lane
-        _keccak_f(state)
 
 
 def sha3_256(data: bytes) -> bytes:
