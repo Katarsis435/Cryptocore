@@ -1,26 +1,28 @@
 # CryptoCore
 
-CLI-инструмент для шифрования/расшифрования файлов: AES-128 в режимах ECB, CBC, CFB, OFB, CTR.
+CLI-инструмент для симметричной криптографии: AES-128 (ECB, CBC, CFB, OFB, CTR, GCM), хеширование (SHA-256, SHA3-256), HMAC и AEAD.
 
 ## Возможности
 
-- AES-128 (128-битный ключ, 16 байт);
-- Режимы: `ecb`, `cbc`, `cfb`, `ofb`, `ctr`;
-- PKCS#7 padding для блочных режимов ECB и CBC;
-- Потоковые режимы CFB, OFB, CTR работают без padding (размер данных сохраняется);
-- Автоматическая генерация IV (`os.urandom(16)`) для CBC, CFB, OFB, CTR;
-- IV сохраняется в первых 16 байтах зашифрованного файла;
-- Ключ и IV задаются в hex-формате;
-- Работа с текстовыми и бинарными файлами;
-- Проверка совместимости с OpenSSL.
+- **AES-128**: режимы `ecb`, `cbc`, `cfb`, `ofb`, `ctr`, `gcm`.
+- **Аутентифицированное шифрование**: AES-GCM (с AAD) и Encrypt-then-MAC (библиотека).
+- **Хеширование**: `sha256`, `sha3-256` (реализованы с нуля).
+- **HMAC**: RFC 2104 поверх SHA-256 / SHA3-256, проверка через `--verify`.
+- **Padding**: PKCS#7 для `ecb`/`cbc`; потоковые режимы работают без padding.
+- **IV/Nonce**: 16 байт для CBC/CFB/OFB/CTR, 12 байт для GCM; генерируются автоматически.
+- **Форматы файлов**:
+  - `cbc`/`cfb`/`ofb`/`ctr`: `[16 байт IV][данные]`;
+  - `gcm`: `[12 байт nonce][шифртекст][16 байт tag]`;
+  - `ecb`: `[данные]` без IV.
+- Работа с бинарными и текстовыми файлами, потоковая обработка больших файлов.
 
 ## Зависимости
 
 - Python 3.12+
-- `pycryptodome >= 3.20.0`
+- `pycryptodome >= 3.20.0` (только AES-примитив)
 - `openssl` в PATH (для тестов совместимости)
 
-## Сборка / установка
+## Установка
 
 ```bash
 git clone https://github.com/Katarsis435/Cryptocore.git
@@ -31,212 +33,284 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-После `pip install -e .` команда `cryptocore` доступна в терминале из любой папки.
+После `pip install -e .` команда `cryptocore` доступна в терминале.
 
-## Использование
+## Шифрование и расшифрование
 
-### Шифрование
+### Legacy-режимы (ECB, CBC, CFB, OFB, CTR)
 
-ECB (без IV):
-```bash
-cryptocore --algorithm aes --mode ecb --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.txt --output ciphertext.bin
-```
-
-CBC (IV генерируется автоматически):
+Шифрование:
 ```bash
 cryptocore --algorithm aes --mode cbc --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.txt --output ciphertext.bin
 ```
 
-CFB / OFB / CTR — то же самое, меняется только `--mode`:
-```bash
-cryptocore --algorithm aes --mode cfb --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.txt --output ciphertext.bin
-cryptocore --algorithm aes --mode ofb --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.txt --output ciphertext.bin
-cryptocore --algorithm aes --mode ctr --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.txt --output ciphertext.bin
-```
-
-### Расшифрование
-
-IV читается автоматически из первых 16 байт файла:
+Расшифрование (IV читается из первых 16 байт файла):
 ```bash
 cryptocore --algorithm aes --mode cbc --decrypt --key 000102030405060708090a0b0c0d0e0f --input ciphertext.bin --output decrypted.txt
 ```
 
-IV передан вручную через `--iv` (hex, 32 символа = 16 байт):
+IV вручную (hex, 32 символа = 16 байт):
 ```bash
 cryptocore --algorithm aes --mode cbc --decrypt --key 000102030405060708090a0b0c0d0e0f --iv 101112131415161718191a1b1c1d1e1f --input ciphertext.bin --output decrypted.txt
 ```
 
-ECB — без IV:
+ECB не использует IV:
 ```bash
+cryptocore --algorithm aes --mode ecb --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.txt --output ciphertext.bin
 cryptocore --algorithm aes --mode ecb --decrypt --key 000102030405060708090a0b0c0d0e0f --input ciphertext.bin --output decrypted.txt
 ```
 
-### Аргументы
+### AES-GCM (AEAD)
 
-| Аргумент       | Описание                                                                 |
-|----------------|--------------------------------------------------------------------------|
-| `--algorithm`  | Шифр. Поддерживается только `aes`.                                       |
-| `--mode`       | Режим: `ecb`, `cbc`, `cfb`, `ofb`, `ctr`.                                |
-| `--encrypt`    | Флаг шифрования (взаимоисключим с `--decrypt`).                          |
-| `--decrypt`    | Флаг расшифрования.                                                      |
-| `--key`        | 32 hex-символа = 16 байт (AES-128).                                      |
-| `--iv`         | 32 hex-символа = 16 байт. Только при `--decrypt` и только для CBC/CFB/OFB/CTR. |
-| `--input`      | Путь к входному файлу.                                                   |
-| `--output`     | Путь к выходному файлу (если не указан — имя сгенерируется автоматически). |
-
-## Работа с IV
-
-Для режимов **CBC, CFB, OFB, CTR**:
-
-- **При шифровании:** IV генерируется автоматически через `os.urandom(16)`. Флаг `--iv` при шифровании **запрещён** (программа завершится с ошибкой).
-- **При расшифровании:** IV берётся либо из `--iv`, либо из первых 16 байт входного файла.
-
-Размер IV всегда 16 байт (размер блока AES).
-
-### Формат зашифрованного файла
-
-```
-CBC, CFB, OFB, CTR:   [16 байт IV][зашифрованные данные]
-ECB:                  [зашифрованные данные]
+Шифрование с AAD:
+```bash
+cryptocore --algorithm aes --mode gcm --encrypt \
+  --key 00112233445566778899aabbccddeeff \
+  --aad aabbccddeeff \
+  --input plaintext.txt --output ciphertext.bin
 ```
 
-## Padding
+Расшифрование с правильным AAD:
+```bash
+cryptocore --algorithm aes --mode gcm --decrypt \
+  --key 00112233445566778899aabbccddeeff \
+  --aad aabbccddeeff \
+  --input ciphertext.bin --output decrypted.txt
+# OK: decrypted ... (exit 0)
+```
 
-- **ECB, CBC** — используется **PKCS#7**. Открытый текст дополняется до кратности 16 байтам. Если данные уже кратны 16, добавляется целый блок padding'а.
-- **CFB, OFB, CTR** — padding **не используется**. Размер данных после шифрования совпадает с исходным.
+Расшифрование с неверным AAD:
+```bash
+cryptocore --algorithm aes --mode gcm --decrypt \
+  --key 00112233445566778899aabbccddeeff \
+  --aad deadbeef \
+  --input ciphertext.bin --output should_not_exist.txt
+# [ERROR] Authentication failed: AAD mismatch or ciphertext tampered.
+# exit 1, выходной файл не создаётся
+```
 
-## Тест полного цикла
+Nonce вручную (12 байт, 24 hex-символа):
+```bash
+cryptocore --algorithm aes --mode gcm --decrypt --key 00112233445566778899aabbccddeeff --iv 000000000000000000000000 --input ciphertext.bin --output decrypted.txt
+```
 
-Пример для CBC (для других режимов замени `--mode cbc` на `--mode ecb|cfb|ofb|ctr`):
+### Аргументы шифрования
+
+| Аргумент | Описание |
+|---|---|
+| `--algorithm` | `aes`. |
+| `--mode` | `ecb`, `cbc`, `cfb`, `ofb`, `ctr`, `gcm`. |
+| `--encrypt` / `--decrypt` | Взаимоисключающие флаги. |
+| `--key` | 32 hex-символа (16 байт). |
+| `--iv` | IV (16 байт) или nonce (12 байт для GCM). Только при расшифровании. |
+| `--aad` | Associated data в hex (только GCM). Необязателен. |
+| `--input` | Путь к входному файлу. |
+| `--output` | Путь к выходному файлу. |
+
+## Хеширование (`dgst`)
+
+Подкоманда `dgst` изолирована от шифрования.
 
 ```bash
-cryptocore --algorithm aes --mode cbc --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.txt --output ciphertext.bin
-cryptocore --algorithm aes --mode cbc --decrypt --key 000102030405060708090a0b0c0d0e0f --input ciphertext.bin --output decrypted.txt
+cryptocore dgst --algorithm sha256 --input document.pdf
+cryptocore dgst --algorithm sha3-256 --input backup.tar --output backup.sha3
+echo -n "abc" | cryptocore dgst --algorithm sha256 --input -
 ```
 
-Проверка совпадения:
-```powershell
-Compare-Object (Get-Content plaintext.txt) (Get-Content decrypted.txt)   # PowerShell — пусто = совпадают
-fc /b plaintext.txt decrypted.txt                                         # cmd.exe
-diff plaintext.txt decrypted.txt                                          # Linux/macOS
+Формат вывода совместим с `sha256sum`:
+```text
+<hash_hex>  <file_path>
 ```
 
-## Проверка совместимости с OpenSSL
+Алгоритмы:
+- **SHA-256** — FIPS 180-4, Merkle–Damgård, 64 раунда.
+- **SHA3-256** — FIPS 202, Keccak-f[1600], rate 1088 бит.
 
-### Автоматическая проверка
+Оба читают файл по частям (8 КБ), память O(1), поддержка больших и пустых файлов.
 
+## HMAC (`dgst --hmac`)
+
+HMAC (RFC 2104) поверх SHA-256 / SHA3-256.
+
+Генерация:
 ```bash
-python -m unittest discover -s tests -v
+cryptocore dgst --algorithm sha256 --hmac --key 00112233445566778899aabbccddeeff --input message.txt
 ```
 
-Файл `tests/test_openssl.py` автоматически проверяет все режимы (ECB, CBC, CFB, OFB, CTR) в **обе стороны**:
+Проверка по эталонному файлу:
+```bash
+cryptocore dgst --algorithm sha256 --hmac --key 00112233445566778899aabbccddeeff --input message.txt --verify expected_hmac.txt
+# [OK] HMAC verification successful (exit 0)
+# [ERROR] HMAC verification failed (exit 1)
+```
 
-1. **CryptoCore → OpenSSL:** шифруем нашим инструментом, расшифровываем OpenSSL, сравниваем с оригиналом.
-2. **OpenSSL → CryptoCore:** шифруем OpenSSL, расшифровываем нашим инструментом, сравниваем с оригиналом.
-3. **Побайтовое совпадение шифротекста** — самый строгий тест.
+Запись в файл:
+```bash
+cryptocore dgst --algorithm sha256 --hmac --key 00112233445566778899aabbccddeeff --input message.txt --output message.hmac
+```
 
-Если `openssl` не установлен в PATH, тесты автоматически скипаются (не падают).
+Аргументы `dgst`:
 
-### Ручная проверка
+| Аргумент | Описание |
+|---|---|
+| `--algorithm` | `sha256` или `sha3-256`. |
+| `--input` | Файл или `-` для stdin. |
+| `--output` | Записать `HASH  FILE` в файл. |
+| `--hmac` | Включает режим HMAC (требует `--key`). |
+| `--key` | HMAC-ключ в hex произвольной длины. |
+| `--verify` | Сверить с ожидаемым HMAC из файла (exit 0/1). |
 
-#### CryptoCore → OpenSSL (пример для CBC)
+Формула HMAC:
+```text
+HMAC(K, m) = H( (K ⊕ opad) ‖ H( (K ⊕ ipad) ‖ m ) )
+```
+- Длинный ключ (`> 64 байт`) хешируется, короткий — zero-pad до 64 байт.
+- Устойчив к length-extension, в отличие от `H(K ‖ m)`.
+- Потоковая обработка файлов.
 
-1. Зашифруй нашим инструментом:
+## AEAD: GCM и Encrypt-then-MAC
+
+**AEAD** (Authenticated Encryption with Associated Data) одновременно обеспечивает конфиденциальность, целостность шифртекста и аутентификацию AAD. Расшифрование либо возвращает корректный plaintext, либо падает с ошибкой.
+
+### AES-GCM
+
+GCM = AES-CTR + GHASH (GF(2^128)), реализован с нуля по NIST SP 800-38D.
+
+Формат:
+```text
+[12 байт nonce][шифртекст][16 байт tag]
+```
+
+Свойства:
+- nonce генерируется через `os.urandom(12)` при каждом шифровании;
+- tag проверяется **до** расшифрования (constant-time);
+- при подмене AAD/шифртекста/tag → exit 1 и выходной файл не создаётся.
+
+### Encrypt-then-MAC
+
+Библиотечная реализация в `src/cryptocore/aead/etm.py`:
+
+```text
+C = E(Ke, P),   T = HMAC(Km, nonce ‖ C ‖ AAD),   output = nonce ‖ C ‖ T
+```
+
+- Шифрование: CTR.
+- MAC: HMAC-SHA256.
+- Ключи: `Ke = SHA256(K)[:16]`, `Km = SHA256(K)[16:]`.
+- Проверка MAC до расшифрования.
+
+### Почему GCM проверяет тег до расшифрования
+
+Если расшифровать до проверки, злоумышленник может подсовывать модифицированные шифртексты и анализировать поведение (padding oracle, chosen-ciphertext, timing). GCM должен возвращать либо корректный plaintext, либо ошибку — без промежуточных состояний.
+
+### Предупреждения по безопасности
+
+- **Не переиспользуйте nonce** с тем же ключом: раскрывается XOR plaintext'ов и возможна подделка tag.
+- **Неверный AAD = полный отказ**, а не «предупреждение».
+- **Не игнорируйте exit code**: `1` означает, что данные изменены или ключ/AAD неверны.
+- Для потоковых приложений со множеством сообщений используйте счётчик nonce или XChaCha20-Poly1305.
+
+## Проверка совместимости с OpenSSL (legacy-режимы)
+
+Автотесты (`tests/test_openssl.py`) проверяют ECB, CBC, CFB, OFB, CTR в обе стороны:
+1. CryptoCore → OpenSSL: шифруем нашим, расшифровываем OpenSSL.
+2. OpenSSL → CryptoCore: наоборот.
+3. Побайтовое совпадение шифртекста.
+
+Если `openssl` не в PATH, тесты скипаются.
+
+Ручной пример для CBC:
 ```bash
 cryptocore --algorithm aes --mode cbc --encrypt --key 000102030405060708090a0b0c0d0e0f --input plaintext.txt --output cipher.bin
 ```
 
-2. Извлеки IV (первые 16 байт) и ciphertext (остальное) — PowerShell:
+Извлечение IV (PowerShell):
 ```powershell
 $data = [System.IO.File]::ReadAllBytes("cipher.bin")
 [System.IO.File]::WriteAllBytes("ct_only.bin", $data[16..($data.Length - 1)])
 $iv = -join ($data[0..15] | ForEach-Object { $_.ToString("x2") })
 ```
 
-3. Расшифруй через OpenSSL:
+Расшифрование через OpenSSL:
 ```bash
 openssl enc -aes-128-cbc -d -K 000102030405060708090a0b0c0d0e0f -iv $iv -in ct_only.bin -out decrypted.txt
 ```
 
-4. Сравни с исходным:
-```powershell
-fc /b plaintext.txt decrypted.txt
-```
+Суффиксы OpenSSL для режимов:
+- `cbc` → `-aes-128-cbc`
+- `cfb` → `-aes-128-cfb`
+- `ofb` → `-aes-128-ofb`
+- `ctr` → `-aes-128-ctr`
+- `ecb` → `-aes-128-ecb` (без IV)
 
-Для других режимов меняется только суффикс OpenSSL:
-- CBC → `-aes-128-cbc`
-- CFB → `-aes-128-cfb`
-- OFB → `-aes-128-ofb`
-- CTR → `-aes-128-ctr`
-
-#### OpenSSL → CryptoCore (пример для CTR)
-
-1. Зашифруй через OpenSSL (IV задаём явно):
-```bash
-openssl enc -aes-128-ctr -K 000102030405060708090a0b0c0d0e0f -iv 101112131415161718191a1b1c1d1e1f -in plaintext.txt -out openssl_cipher.bin
-```
-
-2. Расшифруй нашим инструментом (IV тот же):
-```bash
-cryptocore --algorithm aes --mode ctr --decrypt --key 000102030405060708090a0b0c0d0e0f --iv 101112131415161718191a1b1c1d1e1f --input openssl_cipher.bin --output decrypted.txt
-```
-
-3. Сравни:
-```powershell
-fc /b plaintext.txt decrypted.txt
-```
-
-Для других режимов меняется `--mode` и суффикс OpenSSL.
-
-#### ECB
-
-ECB не использует IV и всегда применяет PKCS#7:
-```bash
-openssl enc -aes-128-ecb -d -K 000102030405060708090a0b0c0d0e0f -in cipher.bin -out decrypted.txt
-```
+> `openssl enc` **не поддерживает GCM**; совместимость GCM проверяется через NIST-векторы в `tests/test_gcm.py`.
 
 ## Тесты
 
 ```bash
-# все тесты
 python -m unittest discover -s tests -v
-
-# или через pytest, если установлен
-pytest -q
 ```
 
-Состав тестов:
-- `tests/test_ecb.py` — ECB, PKCS#7, NIST-вектор;
-- `tests/test_modes.py` — CBC, CFB, OFB, CTR, round-trip, отсутствие padding у потоковых режимов;
-- `tests/test_openssl.py` — автоматическая сверка всех режимов с OpenSSL в обе стороны.
+Состав:
+- `tests/test_ecb.py` — ECB, PKCS#7, NIST-вектор.
+- `tests/test_modes.py` — CBC, CFB, OFB, CTR, round-trip.
+- `tests/test_openssl.py` — совместимость legacy-режимов с OpenSSL.
+- `tests/test_hash.py` — SHA-256 / SHA3-256: NIST, hashlib, потоковость.
+- `tests/test_hmac.py` — RFC 4231, verify, tamper, длины ключей.
+- `tests/test_gcm.py` — NIST SP 800-38D (Test Cases 1–4), round-trip, tamper, nonce uniqueness.
+- `tests/test_etm.py` — Encrypt-then-MAC round-trip и tamper.
+- `tests/test_cli_dgst.py`, `tests/test_cli_gcm.py`, `tests/test_cli_keygen.py` — CLI.
 
 ## Обработка ошибок
 
-- Неверный размер ключа (`--key 1234`) → ошибка, код возврата ≠ 0.
-- Одновременное `--encrypt` и `--decrypt` → ошибка argparse.
-- `--iv` при шифровании → ошибка (IV генерируется автоматически).
-- `--iv` в режиме ECB → ошибка (IV не используется).
-- Входной файл короче 16 байт при расшифровании CBC/CFB/OFB/CTR без `--iv` → ошибка.
+- Неверный размер ключа (`--key 1234`) → exit ≠ 0.
+- `--encrypt` и `--decrypt` одновременно → ошибка argparse.
+- `--iv` при шифровании (legacy-режимы) → ошибка.
+- `--iv` в ECB → ошибка.
+- Входной файл короче IV при расшифровании → ошибка.
+- Неверный AAD / подмена шифртекста в GCM → exit 1, выходной файл не создаётся.
+- `--hmac` без `--key` → ошибка.
 
 ## Структура проекта
 
-```
+```text
 Cryptocore/
 ├── src/
 │   └── cryptocore/
 │       ├── __init__.py
 │       ├── cli_parser.py
+│       ├── csprng.py
 │       ├── file_io.py
+│       ├── hash_io.py
+│       ├── aead/
+│       │   ├── __init__.py
+│       │   └── etm.py
+│       ├── hash/
+│       │   ├── __init__.py
+│       │   ├── sha256.py
+│       │   └── sha3_256.py
+│       ├── mac/
+│       │   ├── __init__.py
+│       │   └── hmac.py
 │       └── modes/
 │           ├── __init__.py
 │           ├── ecb.py
 │           ├── cbc.py
 │           ├── cfb.py
 │           ├── ofb.py
-│           └── ctr.py
+│           ├── ctr.py
+│           └── gcm.py
 ├── tests/
 │   ├── __init__.py
+│   ├── test_cli_dgst.py
+│   ├── test_cli_gcm.py
+│   ├── test_cli_keygen.py
+│   ├── test_csprng.py
 │   ├── test_ecb.py
+│   ├── test_etm.py
+│   ├── test_gcm.py
+│   ├── test_hash.py
+│   ├── test_hmac.py
 │   ├── test_modes.py
 │   └── test_openssl.py
 ├── .gitignore
@@ -244,176 +318,3 @@ Cryptocore/
 ├── requirements.txt
 └── README.md
 ```
-
-## Зависимости
-
-- `pycryptodome` — примитив AES (мы используем его только как AES-примитив для одного блока; логика ECB, CBC, CFB, OFB, CTR реализована вручную);
-- `openssl` (внешний бинарь) — только для тестов совместимости;
-- `pytest` (опционально) — для более удобного запуска тестов.
-
-## Хеширование файлов (`dgst`)
-
-Спринт 4 добавляет подкоманду `dgst` для вычисления хешей. Она **отделена** от шифрования и не принимает `--key`, `--mode`, `--encrypt`, `--decrypt`, `--iv`.
-
-### Использование
-
-```bash
-cryptocore dgst --algorithm sha256 --input document.pdf
-# 5d5b09f6dcb2d53a5fffc60c4ac0d55fb052072fa2fe5d95f011b5d5d5b0b0b5  document.pdf
-```
-
-С записью в файл:
-```bash
-cryptocore dgst --algorithm sha3-256 --input backup.tar --output backup.sha3
-```
-
-Чтение из stdin (`-`):
-```bash
-echo -n "abc" | cryptocore dgst --algorithm sha256 --input -
-# ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  -
-```
-
-### Аргументы `dgst`
-
-| Аргумент       | Описание                                                         |
-|----------------|------------------------------------------------------------------|
-| `--algorithm`  | `sha256` или `sha3-256`.                                         |
-| `--input`      | Путь к файлу, или `-` для stdin.                                 |
-| `--output`     | (опционально) Записать `HASH  FILE` в этот файл.                 |
-
-Формат вывода — совместим с `sha256sum` / `sha3sum`:
-```
-<hash_hex>  <file_path>
-```
-
-### Реализованные алгоритмы
-
-- **SHA-256** — реализован **с нуля** по NIST FIPS 180-4 (Merkle–Damgård, 64 раунда, 512-битные блоки, padding `0x80 || 0x00... || length_bits`).
-- **SHA3-256** — реализован **с нуля** по NIST FIPS 202 (Keccak-f[1600], rate = 1088 бит, capacity = 512 бит, padding `0x06 || 0x00... || 0x80`).
-
-Оба алгоритма:
-- обрабатывают вход произвольной длины (включая пустые и очень большие файлы);
-- читают данные **по частям** (по 8 КБ), память O(1) независимо от размера;
-- возвращают hex в нижнем регистре (64 символа).
-
-### Свойства безопасности
-
-- **SHA-256**: криптостойкая 256-битная хеш-функция; устойчива к коллизиям (лучшая известная атака ~2^128 операций); стандарт де-факто для контрольных сумм и цифровых подписей.
-- **SHA3-256**: 256-битная хеш-функция на основе Keccak-губки; не имеет структуры Merkle–Damgård, поэтому **не подвержена length-extension** атакам; утверждена NIST в 2015.
-
-⚠️ **Хеш — это не аутентификация.** SHA-256/ SHA3-256 дают целостность, но без ключа. Для аутентификации используют HMAC или подписи — это тема будущих спринтов.
-
-### Тесты
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Все тесты включают:
-- NIST known-answer векторы для SHA-256 и SHA3-256;
-- сверку с Python `hashlib` для десятков размеров входа;
-- сверку с `sha256sum` / `sha3sum` (при наличии);
-- тест пустого файла и файла 5 МБ;
-- тест лавинного эффекта;
-- CLI-тесты на формат вывода и на отсутствие лишних аргументов у `dgst`.
-
-### Ручная сверка с системными утилитами
-
-```powershell
-# Windows: используй certutil
-certutil -hashfile document.pdf SHA256
-# или через Git Bash / WSL:
-sha256sum document.pdf
-sha3sum -a 256 document.pdf
-
-cryptocore dgst --algorithm sha256 --input document.pdf
-# хеши должны совпасть
-```
-
-## HMAC (`dgst --hmac`)
-
-Спринт 5 добавляет **HMAC** (RFC 2104) поверх SHA-256 / SHA3-256 из Спринта 4.
-HMAC аутентифицирует сообщение ключом: без ключа нельзя ни подделать MAC,
-ни проверить его.
-
-### Использование
-
-Генерация HMAC (ключ — произвольной длины, hex):
-
-```bash
-cryptocore dgst --algorithm sha256 --hmac --key 00112233445566778899aabbccddeeff --input message.txt
-# a1b2c3d4...  message.txt
-```
-
-Проверка HMAC по эталонному файлу:
-
-```bash
-cryptocore dgst --algorithm sha256 --hmac --key 00112233445566778899aabbccddeeff --input message.txt --verify expected_hmac.txt
-# [OK] HMAC verification successful   (exit 0)
-# [ERROR] HMAC verification failed    (exit 1)
-```
-
-Ручное сравнение (формат вывода совместим с `sha256sum`):
-
-```bash
-cryptocore dgst --algorithm sha256 --hmac --key 00112233445566778899aabbccddeeff --input message.txt > computed.txt
-diff computed.txt expected_hmac.txt
-```
-
-Запись в файл через `--output` (как в Спринте 4):
-
-```bash
-cryptocore dgst --algorithm sha256 --hmac --key 00112233445566778899aabbccddeeff --input message.txt --output message.hmac
-```
-
-### Новые аргументы `dgst`
-
-| Аргумент  | Описание                                                                    |
-|-----------|-----------------------------------------------------------------------------|
-| `--hmac`  | Включает режим HMAC. Требует `--key`.                                       |
-| `--key`   | HMAC-ключ в hex. Длина произвольная (16/32/64/100+ байт — всё допустимо).   |
-| `--verify`| Файл с ожидаемым HMAC. При совпадении exit 0, иначе exit 1.                 |
-
-### Конструкция HMAC
-
-HMAC определён в RFC 2104:
-
-```
-HMAC(K, m) = H( (K ⊕ opad) ‖ H( (K ⊕ ipad) ‖ m ) )
-```
-
-- `H` — хеш-функция (SHA-256 или SHA3-256);
-- `opad` = `0x5c`, повторённый `B` раз (`B = 64` для SHA-256);
-- `ipad` = `0x36`, повторённый `B` раз;
-- `K` — ключ, приведённый к длине блока:
-  - если `len(K) > B` — сначала хешируется: `K = H(K)`;
-  - если `len(K) < B` — дополняется нулями справа до `B` байт.
-
-### Свойства безопасности
-
-- **Аутентификация + целостность.** Противник без ключа не может подделать MAC
-  (стойкость сводится к PRF-свойствам хеш-функции).
-- **Устойчивость к length-extension.** В отличие от наивного `H(K ‖ m)`,
-  HMAC не подвержен атаке удлинения сообщения — это достигается двухпроходной
-  конструкцией с внешним хешем.
-- **Ключ произвольной длины.** Длинные ключи хешируются, короткие zero-pad'ятся
-  — оба варианта безопасны.
-- **Потоковая обработка.** Файл читается по частям (8 КБ), память O(1),
-  поддерживаются файлы любого размера и пустой файл.
-
-⚠️ HMAC — это **симметричная** аутентификация: проверяющая сторона знает ключ.
-Для асимметричной аутентификации нужны цифровые подписи (не в этом спринте).
-
-### Тесты HMAC
-
-```bash
-python -m unittest tests.test_hmac -v
-```
-
-Покрытие:
-- тестовые векторы RFC 4231 (кейсы 1–4 + длинный ключ);
-- генерация → проверка (`--verify`) даёт exit 0;
-- подмена входного файла → exit ≠ 0;
-- неверный ключ → exit ≠ 0;
-- `--hmac` без `--key` → ошибка;
-- пустой файл, большие файлы, ключи 16/64/131 байт.

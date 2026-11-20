@@ -8,7 +8,7 @@ Top-level commands:
 import argparse
 import sys
 
-BLOCK_MODES = {"ecb", "cbc"}
+BLOCK_MODES = {"ecb", "cbc", "gcm"}
 STREAM_MODES = {"cfb", "ofb", "ctr"}
 ALL_MODES = BLOCK_MODES | STREAM_MODES
 IV_MODES = ALL_MODES - {"ecb"}
@@ -23,7 +23,7 @@ BLOCK_SIZE = 16
 def build_enc_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cryptocore",
-        description="AES-128 file encryptor: ECB, CBC, CFB, OFB, CTR.",
+        description="AES-128 file encryptor: ECB, CBC, CFB, OFB, CTR, GCM.",
     )
     parser.add_argument("--algorithm", required=True, choices=["aes"])
     parser.add_argument("--mode", required=True, choices=sorted(ALL_MODES))
@@ -32,6 +32,8 @@ def build_enc_parser() -> argparse.ArgumentParser:
     group.add_argument("--decrypt", action="store_true")
     parser.add_argument("--key", required=False, default=None)
     parser.add_argument("--iv", required=False, default=None)
+    parser.add_argument("--aad", required=False, default=None,
+                        help="Associated data as hex (GCM only).")
     parser.add_argument("--input", required=True, dest="input_file")
     parser.add_argument("--output", required=False, dest="output_file")
     return parser
@@ -230,6 +232,8 @@ def run_encdec(argv) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 1
         auto_generated = True
+    if args.mode == "gcm":
+        return _run_gcm(args, key, auto_generated)
 
     if args.encrypt and args.iv is not None:
         print("error: --iv must not be provided during encryption.",
@@ -326,6 +330,89 @@ def _do_decrypt(mode, data, key, user_iv, ecb, cbc, cfb, ofb, ctr):
 # ---------------------------------------------------------------------------
 # Top-level dispatch
 # ---------------------------------------------------------------------------
+
+
+def _run_gcm(args, key: bytes, auto_generated: bool) -> int:
+    from cryptocore.modes.gcm import GCM, AuthenticationError
+
+    aad = b""
+    if args.aad:
+        try:
+            aad = bytes.fromhex(args.aad)
+        except ValueError:
+            print("error: --aad must be a hexadecimal string.", file=sys.stderr)
+            return 2
+
+    user_nonce = None
+    if args.iv is not None:
+        try:
+            user_nonce = bytes.fromhex(args.iv)
+        except ValueError:
+            print("error: --iv must be a hexadecimal string.", file=sys.stderr)
+            return 2
+        if len(user_nonce) != 12:
+            print(f"error: GCM nonce must be 12 bytes, got {len(user_nonce)}.", file=sys.stderr)
+            return 2
+
+    if auto_generated:
+        print(f"[INFO] Generated random key: {key.hex()}")
+
+    from cryptocore.file_io import read_binary, write_binary
+    import os as _os
+
+    output_path = args.output_file or default_output(args.input_file, args.encrypt)
+
+    try:
+        data = read_binary(args.input_file)
+    except OSError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if args.encrypt:
+        if args.iv is not None:
+            print("error: --iv must not be provided during encryption.", file=sys.stderr)
+            return 2
+        gcm = GCM(key)
+        result = gcm.encrypt(data, aad)
+        try:
+            write_binary(output_path, result)
+        except OSError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"OK: encrypted '{args.input_file}' -> '{output_path}'")
+        return 0
+
+    # Decrypt
+    if user_nonce is None:
+        if len(data) < 12 + 16:
+            print("error: input too short for GCM.", file=sys.stderr)
+            return 1
+        nonce = data[:12]
+    else:
+        nonce = user_nonce
+        data = nonce + data
+
+    gcm = GCM(key, nonce)
+    try:
+        plaintext = gcm.decrypt(data, aad)
+    except AuthenticationError as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        try:
+            if _os.path.exists(output_path):
+                _os.remove(output_path)
+        except OSError:
+            pass
+        return 1
+
+    try:
+        write_binary(output_path, plaintext)
+    except OSError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"OK: decrypted '{args.input_file}' -> '{output_path}'")
+    return 0
+
+
 
 def main(argv=None) -> int:
     if argv is None:
