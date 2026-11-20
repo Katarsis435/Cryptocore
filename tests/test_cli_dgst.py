@@ -45,22 +45,15 @@ class TestDgstCLI(unittest.TestCase):
             self.assertEqual(content,
                              f"{hashlib.sha256(b'abc').hexdigest()}  {p}")
 
-    def test_rejects_key_arg(self):
-        """CLI-3: dgst must not accept encryption-specific args."""
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "f.txt"
-            p.write_bytes(b"x")
-            r = self._run("--algorithm", "sha256", "--input", str(p),
-                          "--key", "a" * 32)
-            self.assertNotEqual(r.returncode, 0)
+    def test_hmac_requires_key_arg(self):
+        """CLI-2: --key is required when --hmac is used."""
+        r = self._run(["--algorithm", "sha256", "--hmac", "--input", "-"])
+        self.assertNotEqual(r.returncode, 0)
 
     def test_rejects_mode_arg(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "f.txt"
-            p.write_bytes(b"x")
-            r = self._run("--algorithm", "sha256", "--input", str(p),
-                          "--mode", "cbc")
-            self.assertNotEqual(r.returncode, 0)
+        """dgst must not accept encryption-specific args like --mode."""
+        r = self._run(["--algorithm", "sha256", "--input", "-", "--mode", "cbc"])
+        self.assertNotEqual(r.returncode, 0)
 
     def test_missing_file(self):
         r = self._run("--algorithm", "sha256", "--input", "no_such_xyz.bin")

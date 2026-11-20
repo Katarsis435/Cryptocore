@@ -38,13 +38,13 @@ def build_enc_parser() -> argparse.ArgumentParser:
 
 
 # ---------------------------------------------------------------------------
-# dgst parser (Sprint 4)
+# dgst parser (Sprint 5)
 # ---------------------------------------------------------------------------
 
 def build_dgst_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cryptocore dgst",
-        description="Compute a cryptographic hash of a file.",
+        description="Compute a cryptographic hash (or HMAC) of a file.",
     )
     parser.add_argument("--algorithm", required=True,
                         choices=["sha256", "sha3-256"],
@@ -53,8 +53,13 @@ def build_dgst_parser() -> argparse.ArgumentParser:
                         help="Input file ('-' for stdin).")
     parser.add_argument("--output", required=False, dest="output_file",
                         help="Write HASH  FILE line to this file instead of stdout.")
+    parser.add_argument("--hmac", action="store_true",
+                        help="Enable HMAC mode (requires --key).")
+    parser.add_argument("--key", default=None,
+                        help="HMAC key as hex string (required with --hmac).")
+    parser.add_argument("--verify", default=None, metavar="FILE",
+                        help="Verify computed HMAC against the value in FILE.")
     return parser
-
 
 # ---------------------------------------------------------------------------
 # dgst command implementation
@@ -67,21 +72,83 @@ def run_dgst(argv) -> int:
     from cryptocore.hash import get_hasher
     from cryptocore.hash_io import hash_file
 
+    # --- HMAC mode ---
+    if args.hmac:
+        if args.key is None:
+            parser.error("--key is required when --hmac is used")
+        try:
+            key_bytes = bytes.fromhex(args.key)
+        except ValueError:
+            print("error: --key must be a valid hexadecimal string.",
+                  file=sys.stderr)
+            return 2
+
+        from cryptocore.mac import HMAC
+        from cryptocore.hash_io import CHUNK_SIZE
+
+        try:
+            mac = HMAC(key_bytes, args.algorithm)
+            _feed_file(args.input_file, mac, CHUNK_SIZE)
+            hex_digest = mac.hexdigest()
+        except (OSError, FileNotFoundError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+
+        return _emit_or_verify(hex_digest, args)
+
+    # --- plain hash mode (Sprint 4, unchanged) ---
     try:
         hasher_cls = get_hasher(args.algorithm)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    hasher = hasher_cls()
     try:
-        digest_hex = hash_file(args.input_file, hasher)
+        digest_hex = hash_file(args.input_file, hasher_cls())
     except (OSError, FileNotFoundError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    # CLI-4 format: HASH  FILE_PATH
-    line = f"{digest_hex}  {args.input_file}\n"
+    return _emit_or_verify(digest_hex, args)
+
+
+def _feed_file(path: str, sink, chunk_size: int) -> None:
+    """Stream file (or stdin) into `sink.update(...)`."""
+    if path == "-":
+        stream = sys.stdin.buffer
+        close = False
+    else:
+        stream = open(path, "rb")
+        close = True
+    try:
+        while True:
+            chunk = stream.read(chunk_size)
+            if not chunk:
+                break
+            sink.update(chunk)
+    finally:
+        if close:
+            stream.close()
+
+
+def _emit_or_verify(hex_digest: str, args) -> int:
+    """Handle --verify / --output / stdout for both hash and HMAC."""
+    line = f"{hex_digest}  {args.input_file}\n"
+
+    if args.verify:
+        try:
+            with open(args.verify, "r", encoding="utf-8") as f:
+                expected = f.read().split()[0].lower() if f.readable() else ""
+        except (OSError, IndexError):
+            print(f"error: cannot read verification file '{args.verify}'",
+                  file=sys.stderr)
+            return 1
+
+        if expected == hex_digest.lower():
+            print("[OK] HMAC verification successful")
+            return 0
+        print("[ERROR] HMAC verification failed")
+        return 1
 
     if args.output_file:
         try:
