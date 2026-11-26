@@ -16,9 +16,7 @@ IV_MODES = ALL_MODES - {"ecb"}
 BLOCK_SIZE = 16
 
 
-# ---------------------------------------------------------------------------
 # Encrypt / decrypt parser (Sprints 1-3, unchanged interface)
-# ---------------------------------------------------------------------------
 
 def build_enc_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -39,9 +37,7 @@ def build_enc_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# ---------------------------------------------------------------------------
 # dgst parser (Sprint 5)
-# ---------------------------------------------------------------------------
 
 def build_dgst_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -63,9 +59,29 @@ def build_dgst_parser() -> argparse.ArgumentParser:
                         help="Verify computed HMAC against the value in FILE.")
     return parser
 
-# ---------------------------------------------------------------------------
-# dgst command implementation
-# ---------------------------------------------------------------------------
+
+def build_derive_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="cryptocore derive",
+        description="Derive a key from a password (PBKDF2-HMAC-SHA256).",
+    )
+    parser.add_argument("--password", required=True,
+                        help="Password (string).")
+    parser.add_argument("--salt", default=None,
+                        help="Salt as hex string. If omitted, random 16-byte salt is generated.")
+    parser.add_argument("--iterations", type=int, default=100000,
+                        help="PBKDF2 iteration count (default: 100000).")
+    parser.add_argument("--length", type=int, default=32,
+                        help="Output key length in bytes (default: 32).")
+    parser.add_argument("--algorithm", default="pbkdf2",
+                        choices=["pbkdf2"],
+                        help="KDF algorithm (currently only pbkdf2).")
+    parser.add_argument("--output", default=None, dest="output_file",
+                        help="Write raw derived key bytes to this file.")
+    return parser
+
+
+
 
 def run_dgst(argv) -> int:
     parser = build_dgst_parser()
@@ -112,6 +128,60 @@ def run_dgst(argv) -> int:
         return 1
 
     return _emit_or_verify(digest_hex, args)
+
+
+
+def run_derive(argv) -> int:
+    parser = build_derive_parser()
+    args = parser.parse_args(argv)
+
+    import os as _os
+    from cryptocore.kdf import pbkdf2_hmac_sha256
+
+    # Salt handling (IO-2)
+    if args.salt is None:
+        salt_bytes = _os.urandom(16)
+    else:
+        try:
+            salt_bytes = bytes.fromhex(args.salt)
+        except ValueError:
+            print("error: --salt must be a hexadecimal string.", file=sys.stderr)
+            return 2
+
+    if args.iterations < 1:
+        print("error: --iterations must be >= 1.", file=sys.stderr)
+        return 2
+    if args.length < 1:
+        print("error: --length must be >= 1.", file=sys.stderr)
+        return 2
+
+    try:
+        key = pbkdf2_hmac_sha256(
+            args.password.encode("utf-8"),
+            salt_bytes,
+            args.iterations,
+            args.length,
+        )
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    # IO-3: output raw bytes to file
+    if args.output_file:
+        try:
+            with open(args.output_file, "wb") as f:
+                f.write(key)
+        except OSError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"OK: key written to '{args.output_file}'")
+    else:
+        # CLI-3: KEY_HEX  SALT_HEX
+        print(f"{key.hex()}  {salt_bytes.hex()}")
+
+    return 0
+
+
 
 
 def _feed_file(path: str, sink, chunk_size: int) -> None:
@@ -165,9 +235,7 @@ def _emit_or_verify(hex_digest: str, args) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Encryption / decryption dispatch (unchanged logic from Sprint 3)
-# ---------------------------------------------------------------------------
+
 
 def parse_key(hex_key: str) -> bytes:
     try:
@@ -420,6 +488,8 @@ def main(argv=None) -> int:
 
     if argv and argv[0] == "dgst":
         return run_dgst(argv[1:])
+    if argv and argv[0] == "derive":
+        return run_derive(argv[1:])
     return run_encdec(argv)
 
 

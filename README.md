@@ -271,6 +271,79 @@ python -m unittest discover -s tests -v
 - Неверный AAD / подмена шифртекста в GCM → exit 1, выходной файл не создаётся.
 - `--hmac` без `--key` → ошибка.
 
+## Получение ключей из паролей (`derive`)
+
+Спринт 7 добавляет подкоманду `derive` для получения ключей из паролей через **PBKDF2-HMAC-SHA256** (RFC 2898) и функцию иерархии ключей.
+
+### Растяжение ключа (key stretching)
+
+Пароли обычно имеют низкую энтропию, и простой хеш `SHA256(password)` подбирается перебором. **Key stretching** усложняет атаку:
+- **Salt** — случайные 16 байт, уникальные для каждого пароля. Соль исключает радужные таблицы и одинаковые ключи для одинаковых паролей.
+- **Iterations** — число повторных HMAC-вызовов (обычно 100 000–1 000 000). Каждая итерация удорожает перебор пропорционально.
+
+### Использование
+
+```bash
+cryptocore derive --password "MyPass" --salt a1b2c3d4e5f601234567890123456789 --iterations 100000 --length 32
+# 5f4dcc3b5aa765d61d8327deb882cf99...  a1b2c3d4e5f601234567890123456789
+```
+
+Без salt (генерируется случайно):
+```bash
+cryptocore derive --password "MyPass" --iterations 100000 --length 16
+# 8d969eef6ecad3c29a3a629280e686cf...  e3b0c44298fc1c149afbf4c8996fb924
+```
+
+С сохранением в файл (сырые байты, не hex):
+```bash
+cryptocore derive --password "MyPass" --salt aabbccdd --iterations 100000 --length 32 --output app.key
+```
+
+### Аргументы `derive`
+
+| Аргумент | Описание |
+|---|---|
+| `--password` | Пароль (строка). |
+| `--salt` | Salt в hex. Если не указан — 16 случайных байт. |
+| `--iterations` | Число итераций PBKDF2 (по умолчанию 100 000). |
+| `--length` | Длина ключа в байтах (по умолчанию 32). |
+| `--algorithm` | `pbkdf2` (пока единственный). |
+| `--output` | Записать сырые байты ключа в файл. |
+
+Формат stdout: `<KEY_HEX>  <SALT_HEX>`. Salt **в файл не пишется**, если не запрошен явно.
+
+### Иерархия ключей (библиотека)
+
+```python
+from cryptocore.kdf import derive_key
+master = b"0" * 32
+enc_key = derive_key(master, "encryption", 32)
+auth_key = derive_key(master, "authentication", 32)
+# enc_key != auth_key, детерминированно для тех же входов
+```
+
+`derive_key` использует `HMAC(master_key, context || counter)` — детерминированная схема для получения подключей с уникальными контекстами.
+
+### Безопасность
+
+- **Минимум 100 000 итераций** для паролей в интерактивных сценариях; 600 000+ для чувствительных систем (OWASP 2023).
+- **Salt ≥ 16 байт**, случайный, уникальный для каждого пароля. Никогда не хардкодьте один salt на всё приложение.
+- **Пароль не должен попадать в логи.** Предпочтительно читать его из файла / env (`CLI-5`, not implemented).
+- **PBKDF2 не защищает от side-channel** при компрометации памяти. В продакшне используйте Argon2id или scrypt.
+
+### Тесты
+
+```bash
+python -m unittest tests.test_pbkdf2 tests.test_cli_derive -v
+```
+
+Покрытие:
+- known-answer векторы PBKDF2-HMAC-SHA256 (1, 2, 4096, 4096 итераций);
+- длины 1–100 байт, сверка с `hashlib.pbkdf2_hmac`;
+- детерминизм и различие при разных итерациях;
+- иерархия ключей: детерминизм, разделение контекстов, длины;
+- CLI: формат stdout, случайный salt, `--output` как raw bytes, ошибки.
+
 ## Структура проекта
 
 ```text
@@ -289,6 +362,10 @@ Cryptocore/
 │       │   ├── __init__.py
 │       │   ├── sha256.py
 │       │   └── sha3_256.py
+│       ├── kdf/
+│       │   ├── __init__.py
+│       │   ├── hkdf.py
+│       │   └── pbkdf2.py
 │       ├── mac/
 │       │   ├── __init__.py
 │       │   └── hmac.py
@@ -302,6 +379,8 @@ Cryptocore/
 │           └── gcm.py
 ├── tests/
 │   ├── __init__.py
+│   ├── test_pbkdf2.py
+│   ├── test_cli_derive.py
 │   ├── test_cli_dgst.py
 │   ├── test_cli_gcm.py
 │   ├── test_cli_keygen.py
